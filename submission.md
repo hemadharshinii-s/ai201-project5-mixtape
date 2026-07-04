@@ -235,7 +235,23 @@ I reduced the `RECENT_THRESHOLD` from 24 hours to 30 minutes so that only genuin
 
 After the fix, I verified that users with listening events older than 30 minutes no longer appear in the feed, while recent activity still appears correctly. I also confirmed that the general activity feed remains unchanged and still includes older listening events, ensuring no unintended side effects.
 
+### **Issue #3 — The same song keeps showing up twice in search**
 
+#### **How I Reproduced It**
+
+I tested the `/songs/search` endpoint using a broad query and observed that some songs appeared multiple times in the results when those songs had multiple associated tags in the seed data. The duplication only occurred for songs with more than one tag, while songs with zero or one tag appeared once as expected.
+
+#### **How I Found The Root Cause**
+
+I traced the `search_songs()` function in `services/search_service.py` and focused on the SQLAlchemy query structure. The key observation was the `outerjoin` between `Song` and the `song_tags` association table. I compared query behavior for songs with different numbers of tags and identified that songs with multiple tags produced multiple SQL rows before being converted into ORM objects.
+
+#### **The Root Cause**
+
+The join between `Song` and `song_tags` creates a one-to-many expansion at the SQL row level. For songs with multiple tags, this results in multiple identical `Song` ORM objects being returned in the query result set (one per tag association). Because no deduplication was applied at the song level, songs with multiple tags appeared multiple times in search results even though they represent a single logical entity.
+
+#### **My Fix and Side-Effect Check**
+
+I added `.distinct(Song.id)` to the SQLAlchemy query to ensure each song appears only once in the result set regardless of how many tag associations exist. I verified that tag data is still correctly included via the ORM relationship / `to_dict()` method, and confirmed that songs with zero, one, and multiple tags all appear exactly once in search results after the fix.
 
 ### **Issue #4 – I got notified when a friend added my song to a playlist but not when they rated it**
 
