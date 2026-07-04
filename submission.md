@@ -215,6 +215,48 @@ Several consistent architectural patterns appear throughout the codebase.
 
 ## **Root Cause Analysis Entries (Milestones 2 & 3)**
 
+### **Issue #2 – Friends Listening Now shows people from yesterday**
+
+#### **How I Reproduced It**
+
+I modified a seeded `ListeningEvent` so that a friend's `listened_at` timestamp was approximately 23 hours in the past. After triggering the `/feed/<user_id>/listening-now` endpoint, the friend still appeared in the "Listening Now" feed, even though their activity occurred the previous day.
+
+#### **How I Found The Root Cause**
+
+I traced the endpoint from `routes/feed.py` into `get_friends_listening_now()` in `services/feed_service.py`. The query correctly filtered `ListeningEvent` records using a cutoff time based on `datetime.now(timezone.utc) - RECENT_THRESHOLD`. The ordering and deduplication logic were correct. The key observation was that `RECENT_THRESHOLD` was set to 24 hours, which did not align with the expected meaning of "Listening Now."
+
+#### **The Root Cause**
+
+The function defined "recent listening activity" as any event within the last 24 hours. This caused users who had listened to music many hours earlier—even from the previous day—to still qualify as "currently listening." While the filtering logic was correct, the time window used was too broad for a feature intended to represent live or near-real-time activity.
+
+#### **My Fix and Side-Effect Check**
+
+I reduced the `RECENT_THRESHOLD` from 24 hours to 30 minutes so that only genuinely recent listening activity is included in the "Listening Now" feed. This preserves the existing filtering, ordering, and deduplication logic while making the definition of "now" consistent with the feature’s intent.
+
+After the fix, I verified that users with listening events older than 30 minutes no longer appear in the feed, while recent activity still appears correctly. I also confirmed that the general activity feed remains unchanged and still includes older listening events, ensuring no unintended side effects.
+
+
+
+### **Issue #4 – I got notified when a friend added my song to a playlist but not when they rated it**
+
+#### **How I Reproduced It**
+
+I first confirmed that playlist notifications worked by having one user add another user's shared song to a playlist and then viewing the recipient's notifications. A notification was created as expected. Next, I rated another user's song using the rating endpoint (`POST /songs/<song_id>/rate`). The rating was successfully saved to the database, but no notification appeared for the original song owner, reproducing the reported issue.
+
+#### **How I Found The Root Cause**
+
+I traced both features through `services/notification_service.py` and compared the two code paths. I first examined `add_to_playlist()`, which correctly creates a notification after updating the playlist. I then followed the execution of `rate_song()`. The rating logic validated the input, updated or created the `Rating` record, and committed the transaction, but then immediately returned the rating. The moment I became confident I had found the root cause was when I compared the two functions line by line and saw that `rate_song()` never called `create_notification()`.
+
+#### **The Root Cause**
+
+The notification system itself was functioning correctly, but the rating workflow never used it. After saving a rating, `rate_song()` committed the database transaction and returned the `Rating` object without creating a notification for the user who originally shared the song. As a result, ratings were recorded successfully, but no notification was ever generated because that step was completely missing from the execution path.
+
+#### **My Fix and Side-Effect Check**
+
+I added a call to `create_notification()` after the rating is successfully committed. The notification is sent to the original song owner when another user rates their song, following the same architectural pattern already used by the playlist notification workflow. I also kept the existing behavior of not notifying users about actions they perform on their own songs.
+
+After making the change, I verified that ratings were still saved correctly, that rating another user's song now created a notification, that rating my own song did not create a notification, and that playlist notifications continued to work as before.
+
 ### **Issue #5 – The last song in a playlist never shows up**
 
 #### **How I Reproduced It**
