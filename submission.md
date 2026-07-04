@@ -1,6 +1,17 @@
 # **Project 5 - Mixtape**
 
-For the playlist bug, I traced the endpoint into get_playlist_songs() myself before asking ChatGPT to review whether the list slicing operation (songs[:-1]) explained the reported behavior. After the explanation, I verified that Python's slicing semantics matched the observed behavior by rerunning the endpoint after making the change.
+## **AI Usage**
+
+During this project, I used AI tools as a debugging assistant to help interpret and understand parts of the codebase after I had already identified relevant areas through manual tracing.
+
+I primarily used AI in the following ways:
+
+- To explain confusing SQLAlchemy query behavior, especially how joins with association tables like `song_tags` can produce duplicate ORM results.
+- To clarify differences in datetime behavior and how date comparisons work when reasoning about streak logic.
+- To help compare similar service-layer patterns (for example, how notification logic was implemented in playlist additions versus rating songs).
+- To sanity-check whether a suspected fix would preserve existing functionality, particularly when deciding whether changes like `.distinct()` or removing slicing would have unintended side effects.
+
+However, I did not rely on AI to locate bugs directly. In each case, I traced execution manually starting from routes, followed service calls step by step, and inspected database queries and return values. AI was used only after I had narrowed down the relevant function or logic area. In some cases, AI explanations initially suggested broader or incorrect interpretations (for example, around streak reset logic involving weekday boundaries). I verified these against the actual code and project requirements before applying any changes. Overall, AI was used as a tool for clarification and validation rather than for initial debugging or automatic bug detection.
 
 ## **Codebase Map (Milestone 1)**
 
@@ -235,9 +246,6 @@ I removed the unnecessary weekday condition and made streak updates depend only 
 - gaps greater than 1 day reset the streak,
 - same-day listening does not change the streak,
 - Sunday transitions behave consistently with other weekdays.
-
-### AI usage
-I used AI assistance to interpret how the weekday-based condition could interact with date arithmetic in streak tracking. I verified the final logic by reasoning through date differences across a Sunday boundary scenario.
 
 ### **Issue #2 – Friends Listening Now shows people from yesterday**
 
