@@ -1,5 +1,7 @@
 # **Project 5 - Mixtape**
 
+For the playlist bug, I traced the endpoint into get_playlist_songs() myself before asking ChatGPT to review whether the list slicing operation (songs[:-1]) explained the reported behavior. After the explanation, I verified that Python's slicing semantics matched the observed behavior by rerunning the endpoint after making the change.
+
 ## **Codebase Map (Milestone 1)**
 
 ###  **Main Files and Their Roles**
@@ -211,52 +213,24 @@ Several consistent architectural patterns appear throughout the codebase.
 * Most route functions immediately delegate to exactly one service function, making the execution flow easy to trace from an HTTP endpoint into the business logic.
 * Several features build on one another. For example, playlist operations can trigger notification creation, and listening events both record user activity and update listening streaks. This indicates that services are designed to coordinate related pieces of application behavior while still keeping the route layer simple.
 
-# Milestone 2 – Bug Reproduction
+## **Root Cause Analysis Entries (Milestones 2 & 3)**
 
-The following notes describe how I reproduced (or attempted to reproduce) each of the five reported issues before making any code changes.
+### **Issue #5 – The last song in a playlist never shows up**
 
----
+#### **How I Reproduced It**
 
-## Issue #1 – My listening streak keeps resetting
+I requested the playlist songs endpoint (`GET /playlists/<playlist_id>/songs`) for one of the seeded playlists and compared the API response against the playlist contents stored in the database using the Flask shell. The database contained seven songs (`len(playlist.songs) == 7`), but the endpoint only returned six songs. The final song in the playlist was consistently missing, confirming the reported bug.
 
-### How I reproduced it
+#### **How I Found The Root Cause**
 
-I examined the listening streak feature by looking at a seeded user's current streak and listening history. I also identified the endpoint responsible for recording listening events (`POST /songs/<song_id>/listen`) and confirmed that this endpoint updates the user's streak. Because this bug only occurs under a specific Sunday boundary condition described in the project brief, I noted that additional investigation would be needed during the debugging phase to recreate the exact scenario before implementing a fix.
+I started by tracing the endpoint from the route into the service layer. The playlist songs endpoint delegates directly to `get_playlist_songs()` in `services/playlist_service.py`, so I focused my investigation there. I followed the function from the database query through to the returned response. The SQLAlchemy query correctly retrieved every song in the playlist and ordered them by position. The point where I became confident I had found the root cause was the final return statement, which sliced the list before converting the songs to dictionaries.
 
----
+#### **The Root Cause**
 
-## Issue #2 – Friends Listening Now shows people from yesterday
+The function returned `songs[:-1]` instead of `songs`. In Python, the slice `[:-1]` returns every element except the last one. Although the database query correctly retrieved every song, the final list comprehension intentionally omitted the last element before returning the response. As a result, every playlist returned one fewer song than actually existed, regardless of playlist size.
 
-### How I reproduced it
+#### **My Fix and Side-Effect Check**
 
-Using the Flask shell, I modified one of the seeded `ListeningEvent` records so that its `listened_at` timestamp was approximately 23 hours old. After committing the change, I requested the `/feed/<user_id>/listening-now` endpoint in the browser.
+I removed the unnecessary slice so the function now returns every song retrieved by the query (`songs`) instead of `songs[:-1]`. This allows the endpoint to return the complete playlist without altering the query or playlist ordering logic.
 
-The response still included users whose listening activity occurred many hours earlier instead of only users who were currently listening, confirming the reported issue.
-
----
-
-## Issue #3 – The same song keeps showing up twice in search
-
-### How I reproduced it
-
-I tested the search endpoint (`/songs/search?q=...`) using several different search terms against the seeded data. Although I did not immediately observe duplicate songs in every search result, I confirmed that the issue is conditional, as described in the project brief. I recorded this behavior for further investigation during the debugging phase.
-
----
-
-## Issue #4 – I got notified when a friend added my song to a playlist but not when they rated it
-
-### How I reproduced it
-
-I first verified that playlist notifications worked by viewing the notification list for a user after another user added one of their songs to a playlist. The notification appeared correctly.
-
-Next, I rated another user's song using the rating endpoint. The rating was successfully stored, but no notification appeared for the original song owner, matching the behavior described in the issue.
-
----
-
-## Issue #5 – The last song in a playlist never shows up
-
-### How I reproduced it
-
-I requested the songs for an existing playlist using the `/playlists/<playlist_id>/songs` endpoint and compared the response with the playlist stored in the database using the Flask shell.
-
-The API response returned only six songs, while `len(playlist.songs)` in the database returned seven songs. The final song in the playlist was missing from the endpoint response, confirming the reported issue.
+After making the change, I requested the same playlist again and confirmed that all seven songs were returned. I also verified that the songs remained in the correct order, confirming that only the missing-song bug was fixed and that the existing ordering behavior was unaffected.
