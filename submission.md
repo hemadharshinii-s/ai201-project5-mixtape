@@ -215,6 +215,30 @@ Several consistent architectural patterns appear throughout the codebase.
 
 ## **Root Cause Analysis Entries (Milestones 2 & 3)**
 
+### **Issue #1 — My listening streak keeps resetting**
+
+#### **How I Reproduced It**
+
+I simulated listening activity across consecutive days, including transitions over a Sunday boundary. When a user listened on consecutive days but one of the days was Sunday, the streak unexpectedly reset to 1 instead of incrementing.
+
+#### **How I Found The Root Cause**
+I traced the `record_listening_event()` function in `services/streak_service.py`, focusing on how `update_listening_streak()` determines whether to increment or reset the streak. I examined the conditional logic around `days_since_last` and noticed an additional weekday-based condition affecting streak updates.
+
+#### **The Root Cause**
+
+The streak update logic incorrectly included a weekday check: `today.weekday() != 6`. This was intended to handle a perceived Sunday boundary case, but it incorrectly prevented valid streak increments when a user listened on consecutive days that included Sunday. As a result, even when `days_since_last == 1`, the streak would reset instead of incrementing whenever the condition failed on Sunday, breaking normal consecutive-day streak behavior.
+
+#### **My Fix and Side-Effect Check**
+
+I removed the unnecessary weekday condition and made streak updates depend only on whether `days_since_last == 1`. This ensures streaks increment strictly based on consecutive calendar days, regardless of weekday. I verified that:
+- consecutive-day listening increments the streak correctly,
+- gaps greater than 1 day reset the streak,
+- same-day listening does not change the streak,
+- Sunday transitions behave consistently with other weekdays.
+
+### AI usage
+I used AI assistance to interpret how the weekday-based condition could interact with date arithmetic in streak tracking. I verified the final logic by reasoning through date differences across a Sunday boundary scenario.
+
 ### **Issue #2 – Friends Listening Now shows people from yesterday**
 
 #### **How I Reproduced It**
