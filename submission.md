@@ -1,5 +1,9 @@
 # **Project 5 - Mixtape**
 
+### **Screenshot of Git Commits (One Commit for Each Fix)**
+
+![](bugFixesGitLog.png)
+
 ## **AI Usage**
 
 During this project, I used AI tools as a debugging assistant to help interpret and understand parts of the codebase after I had already identified relevant areas through manual tracing.
@@ -247,6 +251,8 @@ I removed the unnecessary weekday condition and made streak updates depend only 
 - same-day listening does not change the streak,
 - Sunday transitions behave consistently with other weekdays.
 
+This works because removing the weekday condition ensures the streak update depends only on consecutive calendar-day differences, so valid consecutive-day transitions (including Sundays) are no longer incorrectly excluded.
+
 ### **Issue #2 – Friends Listening Now shows people from yesterday**
 
 #### **How I Reproduced It**
@@ -255,17 +261,32 @@ I modified a seeded `ListeningEvent` so that a friend's `listened_at` timestamp 
 
 #### **How I Found The Root Cause**
 
-I traced the endpoint from `routes/feed.py` into `get_friends_listening_now()` in `services/feed_service.py`. The query correctly filtered `ListeningEvent` records using a cutoff time based on `datetime.now(timezone.utc) - RECENT_THRESHOLD`. The ordering and deduplication logic were correct. The key observation was that `RECENT_THRESHOLD` was set to 24 hours, which did not align with the expected meaning of "Listening Now."
+I started in `routes/feed.py`, which calls `get_friends_listening_now()`, and traced the execution into `services/feed_service.py`. From there, I focused on how “recent activity” was being computed. I followed the construction of the cutoff timestamp and verified that it was defined as `datetime.now(timezone.utc) - RECENT_THRESHOLD`. Next, I checked the SQLAlchemy query filtering `ListeningEvent` and confirmed that it correctly used this cutoff to filter results. I also verified that the ordering by `listened_at` and the deduplication of users were functioning as expected, which ruled out issues in the query structure itself.
+
+At that point, I shifted focus to what controlled the cutoff window and traced `RECENT_THRESHOLD` to its definition. The key moment was realizing that nothing in the query logic was incorrect — the only factor determining who appeared in “Listening Now” was the size of this time window. This led to the conclusion that the system was behaving as designed (24-hour window), but the feature expectation of “now” required a much shorter threshold.
 
 #### **The Root Cause**
 
-The function defined "recent listening activity" as any event within the last 24 hours. This caused users who had listened to music many hours earlier—even from the previous day—to still qualify as "currently listening." While the filtering logic was correct, the time window used was too broad for a feature intended to represent live or near-real-time activity.
+The filtering logic in `get_friends_listening_now()` used a fixed time window defined by `RECENT_THRESHOLD = 24 hours`. The query itself was correct:
+
+- it filtered `ListeningEvent.listened_at >= cutoff_time`
+- where `cutoff_time = datetime.now(timezone.utc) - RECENT_THRESHOLD`
+
+However, the bug was a mismatch between the data model and the feature definition of “Listening Now.”
+
+A 24-hour rolling window meant that any listening event within the past day—regardless of time of day or user activity pattern—was still considered “now.” This created incorrect behavior where stale activity (e.g., from yesterday evening) still appeared in a real-time feed. Importantly, the SQL filtering and ordering logic were not wrong; the issue was that the semantic meaning of “now” was encoded incorrectly as a full-day window instead of a short activity burst window, which should reflect near-immediate listening behavior.
+
+This explains why:
+
+- the query returned correct results for “recent activity”
+- deduplication still worked properly
+- but the feature expectation (“live listening”) was violated
 
 #### **My Fix and Side-Effect Check**
 
 I reduced the `RECENT_THRESHOLD` from 24 hours to 30 minutes so that only genuinely recent listening activity is included in the "Listening Now" feed. This preserves the existing filtering, ordering, and deduplication logic while making the definition of "now" consistent with the feature’s intent.
 
-After the fix, I verified that users with listening events older than 30 minutes no longer appear in the feed, while recent activity still appears correctly. I also confirmed that the general activity feed remains unchanged and still includes older listening events, ensuring no unintended side effects.
+After the fix, I verified that users with listening events older than 30 minutes no longer appear in the feed, while recent activity still appears correctly. I also confirmed that the general activity feed remains unchanged and still includes older listening events, ensuring no unintended side effects. This works because reducing the time window changes the cutoff filter from a broad 24-hour inclusion rule to a short rolling window, ensuring only genuinely recent listening events satisfy the query condition.
 
 ### **Issue #3 — The same song keeps showing up twice in search**
 
@@ -283,7 +304,7 @@ The join between `Song` and `song_tags` creates a one-to-many expansion at the S
 
 #### **My Fix and Side-Effect Check**
 
-I added `.distinct(Song.id)` to the SQLAlchemy query to ensure each song appears only once in the result set regardless of how many tag associations exist. I verified that tag data is still correctly included via the ORM relationship / `to_dict()` method, and confirmed that songs with zero, one, and multiple tags all appear exactly once in search results after the fix.
+I added `.distinct(Song.id)` to the SQLAlchemy query to ensure each song appears only once in the result set regardless of how many tag associations exist. I verified that tag data is still correctly included via the ORM relationship / `to_dict()` method, and confirmed that songs with zero, one, and multiple tags all appear exactly once in search results after the fix. This works because applying .distinct(Song.id) forces SQLAlchemy to collapse multiple joined rows for the same song into a single result per primary key before ORM hydration.
 
 ### **Issue #4 – I got notified when a friend added my song to a playlist but not when they rated it**
 
@@ -293,7 +314,7 @@ I first confirmed that playlist notifications worked by having one user add anot
 
 #### **How I Found The Root Cause**
 
-I traced both features through `services/notification_service.py` and compared the two code paths. I first examined `add_to_playlist()`, which correctly creates a notification after updating the playlist. I then followed the execution of `rate_song()`. The rating logic validated the input, updated or created the `Rating` record, and committed the transaction, but then immediately returned the rating. The moment I became confident I had found the root cause was when I compared the two functions line by line and saw that `rate_song()` never called `create_notification()`.
+I traced both features through `services/notification_service.py` and compared the two code paths. I first examined `add_to_playlist()`, which correctly creates a notification after updating the playlist. I then followed the execution of `rate_song()`. The rating logic validated the input, updated or created the `Rating` record, and committed the transaction, but then immediately returned the rating. I became confident I had found the root cause when I compared `add_to_playlist()` and `rate_song()` side-by-side and noticed that both completed similar database updates, but only `add_to_playlist()` triggered `create_notification()`. This confirmed the issue was not in the notification system itself, but in a missing call in the rating workflow.
 
 #### **The Root Cause**
 
@@ -303,7 +324,7 @@ The notification system itself was functioning correctly, but the rating workflo
 
 I added a call to `create_notification()` after the rating is successfully committed. The notification is sent to the original song owner when another user rates their song, following the same architectural pattern already used by the playlist notification workflow. I also kept the existing behavior of not notifying users about actions they perform on their own songs.
 
-After making the change, I verified that ratings were still saved correctly, that rating another user's song now created a notification, that rating my own song did not create a notification, and that playlist notifications continued to work as before.
+After making the change, I verified that ratings were still saved correctly, that rating another user's song now created a notification, that rating my own song did not create a notification, and that playlist notifications continued to work as before. This works because adding the notification call after the rating commit extends the existing execution path so that a successful rating event also triggers the same notification creation mechanism used in the playlist workflow.
 
 ### **Issue #5 – The last song in a playlist never shows up**
 
@@ -323,4 +344,4 @@ The function returned `songs[:-1]` instead of `songs`. In Python, the slice `[:-
 
 I removed the unnecessary slice so the function now returns every song retrieved by the query (`songs`) instead of `songs[:-1]`. This allows the endpoint to return the complete playlist without altering the query or playlist ordering logic.
 
-After making the change, I requested the same playlist again and confirmed that all seven songs were returned. I also verified that the songs remained in the correct order, confirming that only the missing-song bug was fixed and that the existing ordering behavior was unaffected.
+After making the change, I requested the same playlist again and confirmed that all seven songs were returned. I also verified that the songs remained in the correct order, confirming that only the missing-song bug was fixed and that the existing ordering behavior was unaffected. This works because removing the slice changes the returned list from a truncated subarray to the full query result, ensuring no elements are dropped after SQL retrieval and transformation.
